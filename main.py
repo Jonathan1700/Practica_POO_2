@@ -1,23 +1,28 @@
 import os
 import sys
-import subprocess
+import runpy
 import shutil
+import builtins
 
 # ─────────────────────────────────────────────
 #   UTILIDADES DE CONSOLA
 # ─────────────────────────────────────────────
 
 def gotoxy(x, y):
-    print(f"\033[{y};{x}H", end="", flush=True)
+    # Usamos sys.stdout.write para nunca pasar por builtins.print
+    sys.stdout.write(f"\033[{y};{x}H")
+    sys.stdout.flush()
 
 def limpiar_pantalla():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 def ocultar_cursor():
-    print("\033[?25l", end="", flush=True)
+    sys.stdout.write("\033[?25l")
+    sys.stdout.flush()
 
 def mostrar_cursor():
-    print("\033[?25h", end="", flush=True)
+    sys.stdout.write("\033[?25h")
+    sys.stdout.flush()
 
 def rgb(r, g, b):
     return f"\033[38;2;{r};{g};{b}m"
@@ -27,6 +32,15 @@ def get_cols():
 
 def get_filas():
     return shutil.get_terminal_size((80, 24)).lines
+
+def w(texto):
+    """Escribe directo a stdout sin pasar por builtins.print."""
+    sys.stdout.write(texto)
+    sys.stdout.flush()
+
+def wln(texto=""):
+    sys.stdout.write(texto + "\n")
+    sys.stdout.flush()
 
 RESET = "\033[0m"
 BOLD  = "\033[1m"
@@ -43,7 +57,6 @@ C_RESALT_SUB  = rgb(255, 80, 80)
 C_SEPARADOR   = rgb(80, 80, 120)
 C_SALIR       = rgb(255, 80, 80)
 C_DESC_EJ     = rgb(180, 220, 255)
-# Visor de código
 C_BORDE_COD   = rgb(255, 165, 0)
 C_TITULO_COD  = rgb(255, 220, 0)
 C_NUM_LINEA   = rgb(100, 100, 140)
@@ -51,10 +64,8 @@ C_CODIGO      = rgb(220, 255, 180)
 C_SCROLL_INFO = rgb(160, 160, 160)
 C_ACCION_1    = rgb(0, 255, 180)
 C_ACCION_0    = rgb(255, 80, 80)
-# Marco de ejecución
-C_BORDE_RUN   = rgb(0, 220, 120)    # verde esmeralda — cabecera
+C_BORDE_RUN   = rgb(0, 220, 120)
 C_TITULO_RUN  = rgb(255, 255, 255)
-C_BORDE_FIN   = rgb(0, 180, 255)    # cian — pie
 C_ENTER       = rgb(255, 220, 0)
 
 
@@ -65,37 +76,70 @@ def truncar(texto: str, max_len: int) -> str:
 
 
 # ─────────────────────────────────────────────
+#   HELPERS DE DIBUJO  (todos usan w/wln/gotoxy,
+#   nunca builtins.print — seguros durante monkey-patch)
+# ─────────────────────────────────────────────
+
+TL="╔"; TR="╗"; BL="╚"; BR="╝"; H="═"; V="║"; ML="╠"; MR="╣"
+
+def _borde_h_raw(x, y, ancho, izq, der, color):
+    gotoxy(x, y)
+    w(f"{color}{izq}{H*(ancho-2)}{der}{RESET}")
+
+def _pared_raw(x_ini, x_fin, y, color):
+    gotoxy(x_ini, y); w(f"{color}{V}{RESET}")
+    gotoxy(x_fin,  y); w(f"{color}{V}{RESET}")
+
+def _limpiar_fila_raw(x_ini, interior, y):
+    gotoxy(x_ini + 1, y)
+    w(" " * interior)
+
+def _fila_texto_raw(x_ini, x_fin, interior, y, texto, color_txt, color_borde, indent=1):
+    _pared_raw(x_ini, x_fin, y, color_borde)
+    _limpiar_fila_raw(x_ini, interior, y)
+    trunc = truncar(texto, interior - indent - 1)
+    gotoxy(x_ini + indent, y)
+    w(f"{color_txt}{trunc}{RESET}")
+
+def _fila_centrada_raw(x_ini, x_fin, interior, y, texto, color_txt, color_borde):
+    _pared_raw(x_ini, x_fin, y, color_borde)
+    _limpiar_fila_raw(x_ini, interior, y)
+    texto_trunc = truncar(texto, interior - 2)
+    pad = max(0, (interior - len(texto_trunc)) // 2)
+    gotoxy(x_ini + 1 + pad, y)
+    w(f"{color_txt}{texto_trunc}{RESET}")
+
+
+# ─────────────────────────────────────────────
 #   CLASE MENU
 # ─────────────────────────────────────────────
 
 class Menu:
-    TL = "╔"; TR = "╗"; BL = "╚"; BR = "╝"
-    H  = "═"; V  = "║"
-    ML = "╠"; MR = "╣"
 
     def __init__(self, bloques: dict):
         self.bloques = bloques
 
-    # ── Helpers genéricos ──────────────────────────────────────────
+    # ── Helpers de menús (usan print normal — no hay monkey-patch) ─
 
-    def _borde_h(self, x, y, ancho, izq, der, color):
+    @staticmethod
+    def _bh(x, y, ancho, izq, der, color):
         gotoxy(x, y)
-        print(f"{color}{izq}{self.H * (ancho - 2)}{der}{RESET}", end="", flush=True)
+        w(f"{color}{izq}{H*(ancho-2)}{der}{RESET}")
 
-    def _paredes(self, x_ini, x_fin, y, color):
-        gotoxy(x_ini, y);  print(f"{color}{self.V}{RESET}", end="", flush=True)
-        gotoxy(x_fin, y);  print(f"{color}{self.V}{RESET}", end="", flush=True)
+    @staticmethod
+    def _pw(x_ini, x_fin, y, color):
+        gotoxy(x_ini, y); w(f"{color}{V}{RESET}")
+        gotoxy(x_fin,  y); w(f"{color}{V}{RESET}")
 
-    def _limpiar_fila(self, x_ini, ancho, y):
-        gotoxy(x_ini + 1, y)
-        print(" " * (ancho - 2), end="", flush=True)
+    @staticmethod
+    def _lf(x_ini, interior, y):
+        gotoxy(x_ini + 1, y); w(" " * interior)
 
-    def _centrar(self, x_ini, ancho, y, texto, color=""):
-        interior = ancho - 2
+    @staticmethod
+    def _ct(x_ini, interior, y, texto, color=""):
         pad = max(0, (interior - len(texto)) // 2)
-        self._limpiar_fila(x_ini, ancho, y)
         gotoxy(x_ini + 1 + pad, y)
-        print(f"{color}{texto}{RESET}", end="", flush=True)
+        w(f"{color}{texto}{RESET}")
 
     # ── Menú principal ─────────────────────────────────────────────
 
@@ -107,26 +151,28 @@ class Menu:
             c     = get_cols()
             f     = get_filas()
             ancho = max(56, min(72, c - 4))
+            inter = ancho - 2
             alto  = len(self.bloques) + 6
             x_ini = max(1, (c - ancho) // 2 + 1)
             x_fin = x_ini + ancho - 1
             y_ini = max(1, (f - alto) // 2)
             cb    = C_BORDE_PRIN
-            et    = ancho - 2 - 22          # espacio para tema
+            et    = inter - 22
 
-            self._borde_h(x_ini, y_ini, ancho, self.TL, self.TR, cb)
+            self._bh(x_ini, y_ini, ancho, TL, TR, cb)
 
             y = y_ini + 1
-            self._paredes(x_ini, x_fin, y, cb)
-            self._centrar(x_ini, ancho, y, "✦  MENÚ PRINCIPAL  ✦", BOLD + C_TITULO_PRIN)
+            self._pw(x_ini, x_fin, y, cb)
+            self._lf(x_ini, inter, y)
+            self._ct(x_ini, inter, y, "✦  MENÚ PRINCIPAL  ✦", BOLD + C_TITULO_PRIN)
 
             y += 1
-            self._borde_h(x_ini, y, ancho, self.ML, self.MR, cb)
+            self._bh(x_ini, y, ancho, ML, MR, cb)
 
             for key, bloque in self.bloques.items():
                 y += 1
-                self._paredes(x_ini, x_fin, y, cb)
-                self._limpiar_fila(x_ini, ancho, y)
+                self._pw(x_ini, x_fin, y, cb)
+                self._lf(x_ini, inter, y)
                 nombre = bloque['nombre'][:10]
                 tema   = truncar(bloque['tema'], max(8, et))
                 linea  = (f"  {C_RESALT_PRIN}[{RESET}{C_OPCION_PRIN}{key}{RESET}"
@@ -134,25 +180,19 @@ class Menu:
                           f"{C_OPCION_PRIN}{nombre:<10}{RESET}  "
                           f"{C_SEPARADOR}│{RESET}  "
                           f"{C_OPCION_PRIN}{tema}{RESET}")
-                gotoxy(x_ini + 1, y)
-                print(linea, end="", flush=True)
+                gotoxy(x_ini + 1, y); w(linea)
 
+            y += 1; self._bh(x_ini, y, ancho, ML, MR, cb)
             y += 1
-            self._borde_h(x_ini, y, ancho, self.ML, self.MR, cb)
-
-            y += 1
-            self._paredes(x_ini, x_fin, y, cb)
-            self._limpiar_fila(x_ini, ancho, y)
+            self._pw(x_ini, x_fin, y, cb)
+            self._lf(x_ini, inter, y)
             gotoxy(x_ini + 1, y)
-            print(f"  {C_RESALT_PRIN}[{RESET}{C_SALIR}S{RESET}"
-                  f"{C_RESALT_PRIN}]{RESET}  {C_SALIR}Salir del programa{RESET}",
-                  end="", flush=True)
+            w(f"  {C_RESALT_PRIN}[{RESET}{C_SALIR}S{RESET}"
+              f"{C_RESALT_PRIN}]{RESET}  {C_SALIR}Salir del programa{RESET}")
 
-            y += 1
-            self._borde_h(x_ini, y, ancho, self.BL, self.BR, cb)
+            y += 1; self._bh(x_ini, y, ancho, BL, BR, cb)
 
-            gotoxy(x_ini, y + 2)
-            mostrar_cursor()
+            gotoxy(x_ini, y + 2); mostrar_cursor()
             print(f"{C_TITULO_PRIN}  ➤  Elige un bloque: {RESET}", end="", flush=True)
             opcion = input().strip().lower()
 
@@ -165,10 +205,8 @@ class Menu:
                 self.mostrar_submenu(self.bloques[opcion])
             else:
                 gotoxy(x_ini, y + 4)
-                print(f"{C_SALIR}  Opción no válida. Intenta de nuevo.{RESET}",
-                      end="", flush=True)
-                mostrar_cursor()
-                input()
+                print(f"{C_SALIR}  Opción no válida.{RESET}", end="", flush=True)
+                mostrar_cursor(); input()
 
     # ── Submenú ────────────────────────────────────────────────────
 
@@ -183,53 +221,42 @@ class Menu:
 
             c     = get_cols()
             ancho = max(60, min(88, c - 2))
+            inter = ancho - 2
             x_ini = max(1, (c - ancho) // 2 + 1)
             x_fin = x_ini + ancho - 1
             cb    = C_BORDE_SUB
-            ed    = ancho - 2 - 26          # espacio para desc
+            ed    = inter - 26
 
             y = 2
-            self._borde_h(x_ini, y, ancho, self.TL, self.TR, cb)
-
+            self._bh(x_ini, y, ancho, TL, TR, cb)
             y += 1
-            self._paredes(x_ini, x_fin, y, cb)
-            titulo = truncar(f"✦  {nombre_bloque.upper()}  —  {tema.upper()}  ✦", ancho - 4)
-            self._centrar(x_ini, ancho, y, titulo, BOLD + C_TITULO_SUB)
-
-            y += 1
-            self._borde_h(x_ini, y, ancho, self.ML, self.MR, cb)
+            self._pw(x_ini, x_fin, y, cb); self._lf(x_ini, inter, y)
+            titulo = truncar(f"✦  {nombre_bloque.upper()}  —  {tema.upper()}  ✦", inter - 4)
+            self._ct(x_ini, inter, y, titulo, BOLD + C_TITULO_SUB)
+            y += 1; self._bh(x_ini, y, ancho, ML, MR, cb)
 
             opciones_validas = {}
             for i, (nombre_ej, datos) in enumerate(ejercicios.items(), start=1):
                 y += 1
-                self._paredes(x_ini, x_fin, y, cb)
-                self._limpiar_fila(x_ini, ancho, y)
+                self._pw(x_ini, x_fin, y, cb); self._lf(x_ini, inter, y)
                 desc  = truncar(datos['desc'], max(10, ed))
                 linea = (f"  {C_RESALT_SUB}[{RESET}{C_OPCION_SUB}{i}{RESET}"
                          f"{C_RESALT_SUB}]{RESET}  "
                          f"{C_OPCION_SUB}{BOLD}{nombre_ej:<14}{RESET}  "
                          f"{C_SEPARADOR}│{RESET}  "
                          f"{C_OPCION_SUB}{desc}{RESET}")
-                gotoxy(x_ini + 1, y)
-                print(linea, end="", flush=True)
+                gotoxy(x_ini + 1, y); w(linea)
                 opciones_validas[str(i)] = datos
 
+            y += 1; self._bh(x_ini, y, ancho, ML, MR, cb)
             y += 1
-            self._borde_h(x_ini, y, ancho, self.ML, self.MR, cb)
-
-            y += 1
-            self._paredes(x_ini, x_fin, y, cb)
-            self._limpiar_fila(x_ini, ancho, y)
+            self._pw(x_ini, x_fin, y, cb); self._lf(x_ini, inter, y)
             gotoxy(x_ini + 1, y)
-            print(f"  {C_RESALT_SUB}[{RESET}{C_SALIR}0{RESET}"
-                  f"{C_RESALT_SUB}]{RESET}  {C_SALIR}Regresar al Menú Principal{RESET}",
-                  end="", flush=True)
+            w(f"  {C_RESALT_SUB}[{RESET}{C_SALIR}0{RESET}"
+              f"{C_RESALT_SUB}]{RESET}  {C_SALIR}Regresar al Menú Principal{RESET}")
+            y += 1; self._bh(x_ini, y, ancho, BL, BR, cb)
 
-            y += 1
-            self._borde_h(x_ini, y, ancho, self.BL, self.BR, cb)
-
-            gotoxy(x_ini, y + 2)
-            mostrar_cursor()
+            gotoxy(x_ini, y + 2); mostrar_cursor()
             print(f"{C_TITULO_SUB}  ➤  Elige un ejercicio: {RESET}", end="", flush=True)
             opcion = input().strip()
 
@@ -238,13 +265,11 @@ class Menu:
             elif opcion in opciones_validas:
                 datos = opciones_validas[opcion]
                 if self._mostrar_codigo(datos):
-                    self._ejecutar_script(datos['ruta'], datos['desc'])
+                    self._ejecutar_en_marco(datos['ruta'], datos['desc'])
             else:
                 gotoxy(x_ini, y + 4)
-                print(f"{C_SALIR}  Opción no válida. Intenta de nuevo.{RESET}",
-                      end="", flush=True)
-                mostrar_cursor()
-                input()
+                print(f"{C_SALIR}  Opción no válida.{RESET}", end="", flush=True)
+                mostrar_cursor(); input()
 
     # ── Visor de código ────────────────────────────────────────────
 
@@ -255,8 +280,7 @@ class Menu:
         if not os.path.exists(ruta):
             limpiar_pantalla()
             print(f"\n{C_SALIR}  ¡Error! No se encontró: {ruta}{RESET}\n")
-            mostrar_cursor()
-            input("  Presiona Enter para continuar...")
+            mostrar_cursor(); input("  Presiona Enter para continuar...")
             return False
 
         with open(ruta, "r", encoding="utf-8", errors="replace") as f:
@@ -265,192 +289,256 @@ class Menu:
         c         = get_cols()
         f_        = get_filas()
         ancho     = max(60, min(90, c - 2))
+        inter     = ancho - 2
         x_ini     = max(1, (c - ancho) // 2 + 1)
         x_fin     = x_ini + ancho - 1
-        interior  = ancho - 2
-        num_w     = 4
-        cod_w     = interior - num_w - 2
+        cod_w     = inter - 6
 
-        CABECERA   = 5
-        PIE        = 4
-        filas_cod  = max(5, f_ - CABECERA - PIE - 2)
+        CABECERA  = 5
+        PIE       = 4
+        filas_cod = max(5, f_ - CABECERA - PIE - 2)
+        cb        = C_BORDE_COD
 
-        cb = C_BORDE_COD
-
-        def borde_h(y, izq, der):
-            gotoxy(x_ini, y)
-            print(f"{cb}{izq}{self.H*(ancho-2)}{der}{RESET}", end="", flush=True)
+        def bh(y, izq, der):
+            gotoxy(x_ini, y); w(f"{cb}{izq}{H*(ancho-2)}{der}{RESET}")
 
         def pared(y):
-            gotoxy(x_ini, y);  print(f"{cb}{self.V}{RESET}", end="", flush=True)
-            gotoxy(x_fin, y);  print(f"{cb}{self.V}{RESET}", end="", flush=True)
+            gotoxy(x_ini, y); w(f"{cb}{V}{RESET}")
+            gotoxy(x_fin,  y); w(f"{cb}{V}{RESET}")
 
-        def limpiar_fila(y):
-            gotoxy(x_ini+1, y); print(" "*interior, end="", flush=True)
+        def lf(y):
+            gotoxy(x_ini+1, y); w(" "*inter)
 
-        def centrar(y, texto, color=""):
-            pad = max(0, (interior - len(texto)) // 2)
-            limpiar_fila(y)
-            gotoxy(x_ini+1+pad, y)
-            print(f"{color}{texto}{RESET}", end="", flush=True)
+        def ct(y, texto, color=""):
+            pad = max(0, (inter - len(texto)) // 2)
+            lf(y); gotoxy(x_ini+1+pad, y); w(f"{color}{texto}{RESET}")
 
-        def dibujar_linea_cod(y, num_linea, texto):
-            pared(y); limpiar_fila(y)
-            num_str = f"{C_NUM_LINEA}{num_linea:>3} {RESET}"
-            sep_str = f"{C_SEPARADOR}│{RESET} "
-            cod_str = f"{C_CODIGO}{truncar(texto, cod_w)}{RESET}"
+        def linea_cod(y, num, texto):
+            pared(y); lf(y)
             gotoxy(x_ini+1, y)
-            print(f"{num_str}{sep_str}{cod_str}", end="", flush=True)
+            w(f"{C_NUM_LINEA}{num:>3} {RESET}{C_SEPARADOR}│{RESET} "
+              f"{C_CODIGO}{truncar(texto, cod_w)}{RESET}")
 
         total  = len(lineas)
         offset = 0
 
         while True:
-            limpiar_pantalla()
-            ocultar_cursor()
+            limpiar_pantalla(); ocultar_cursor()
 
-            y = 1
-            borde_h(y, self.TL, self.TR)
-
+            y = 1; bh(y, TL, TR)
             y += 1; pared(y)
-            centrar(y, f"◈  CÓDIGO  —  {os.path.basename(ruta)}  ◈", BOLD + C_TITULO_COD)
-
-            y += 1; borde_h(y, self.ML, self.MR)
-
-            y += 1; pared(y); limpiar_fila(y)
+            ct(y, f"◈  CÓDIGO  —  {os.path.basename(ruta)}  ◈", BOLD + C_TITULO_COD)
+            y += 1; bh(y, ML, MR)
+            y += 1; pared(y); lf(y)
             gotoxy(x_ini+1, y)
-            print(f"{C_DESC_EJ}{truncar('  ' + desc, interior)}{RESET}", end="", flush=True)
+            w(f"{C_DESC_EJ}{truncar('  ' + desc, inter)}{RESET}")
+            y += 1; bh(y, ML, MR)
 
-            y += 1; borde_h(y, self.ML, self.MR)
-
-            y_cod_ini = y + 1
+            y_c = y + 1
             for rel in range(filas_cod):
-                ya  = y_cod_ini + rel
-                idx = offset + rel
+                ya = y_c + rel; idx = offset + rel
                 if idx < total:
-                    dibujar_linea_cod(ya, idx + 1, lineas[idx])
+                    linea_cod(ya, idx+1, lineas[idx])
                 else:
-                    pared(ya); limpiar_fila(ya)
+                    pared(ya); lf(ya)
 
-            y = y_cod_ini + filas_cod
-            borde_h(y, self.ML, self.MR)
-
-            y += 1; pared(y); limpiar_fila(y)
+            y = y_c + filas_cod; bh(y, ML, MR)
+            y += 1; pared(y); lf(y)
             pag_a = offset // filas_cod + 1
             pag_t = max(1, (total + filas_cod - 1) // filas_cod)
-            nav   = "  W/↑ subir   S/↓ bajar  " if total > filas_cod else ""
-            info  = truncar(f"  Líneas {offset+1}–{min(offset+filas_cod,total)} de {total}  [{pag_a}/{pag_t}]{nav}", interior)
+            nav   = "  W↑ subir  S↓ bajar  " if total > filas_cod else ""
             gotoxy(x_ini+1, y)
-            print(f"{C_SCROLL_INFO}{info}{RESET}", end="", flush=True)
+            w(f"{C_SCROLL_INFO}{truncar(f'  Líneas {offset+1}–{min(offset+filas_cod,total)} de {total}  [{pag_a}/{pag_t}]{nav}', inter)}{RESET}")
 
-            y += 1; borde_h(y, self.ML, self.MR)
-
-            y += 1; pared(y); limpiar_fila(y)
+            y += 1; bh(y, ML, MR)
+            y += 1; pared(y); lf(y)
             gotoxy(x_ini+1, y)
-            print(f"  {C_BORDE_COD}[{RESET}{C_ACCION_1}1{RESET}{C_BORDE_COD}]{RESET}"
-                  f"  {C_ACCION_1}{BOLD}Ejecutar ejercicio{RESET}"
-                  f"        "
-                  f"{C_BORDE_COD}[{RESET}{C_ACCION_0}0{RESET}{C_BORDE_COD}]{RESET}"
-                  f"  {C_ACCION_0}Volver{RESET}",
-                  end="", flush=True)
+            w(f"  {C_BORDE_COD}[{RESET}{C_ACCION_1}1{RESET}{C_BORDE_COD}]{RESET}"
+              f"  {C_ACCION_1}{BOLD}Ejecutar{RESET}"
+              f"          "
+              f"{C_BORDE_COD}[{RESET}{C_ACCION_0}0{RESET}{C_BORDE_COD}]{RESET}"
+              f"  {C_ACCION_0}Volver{RESET}")
+            y += 1; bh(y, BL, BR)
 
-            y += 1; borde_h(y, self.BL, self.BR)
-
-            gotoxy(x_ini, y + 2)
-            mostrar_cursor()
+            gotoxy(x_ini, y+2); mostrar_cursor()
             print(f"{C_TITULO_COD}  ➤  Opción: {RESET}", end="", flush=True)
             tecla = input().strip().lower()
 
-            if tecla in ('1', ''):
-                return True
-            elif tecla in ('0', 'q', 'b'):
-                return False
+            if tecla in ('1', ''):   return True
+            elif tecla in ('0', 'q'): return False
             elif tecla in ('s', 'j'):
-                if offset + filas_cod < total:
-                    offset += filas_cod
+                if offset + filas_cod < total: offset += filas_cod
             elif tecla in ('w', 'k'):
                 offset = max(0, offset - filas_cod)
 
-    # ── Ejecutar script con marco arriba y abajo ───────────────────
+    # ── Ejecutar dentro de marco ────────────────────────────────────
 
     @staticmethod
-    def _ejecutar_script(ruta: str, descripcion: str = ""):
+    def _ejecutar_en_marco(ruta: str, descripcion: str = ""):
+        """
+        Todo el dibujo usa sys.stdout.write (función w/wln/gotoxy).
+        El monkey-patch reemplaza builtins.print y builtins.input,
+        pero NUNCA llama a esas funciones internamente — usa w() y
+        sys.stdin.readline() directamente, eliminando toda recursión.
+        """
         limpiar_pantalla()
 
-        c        = get_cols()
-        ancho    = min(76, c - 2)
-        x_ini    = max(1, (c - ancho) // 2 + 1)
-        x_fin    = x_ini + ancho - 1
-        interior = ancho - 2
-        cb_top   = C_BORDE_RUN
+        c     = get_cols()
+        ancho = min(78, c - 2)
+        inter = ancho - 2
+        x_ini = max(1, (c - ancho) // 2 + 1)
+        x_fin = x_ini + ancho - 1
+        cb    = C_BORDE_RUN
 
-        TL="╔"; TR="╗"; BL="╚"; BR="╝"; H="═"; V="║"; ML="╠"; MR="╣"
+        # ── Helpers internos (w, nunca print) ─────────────────────
 
-        def borde_h(y, izq, der, color):
+        def bh(y, izq, der, color=None):
+            clr = color or cb
             gotoxy(x_ini, y)
-            print(f"{color}{izq}{H*(ancho-2)}{der}{RESET}", end="", flush=True)
+            w(f"{clr}{izq}{H*(ancho-2)}{der}{RESET}")
 
-        def pared_top(y):
-            gotoxy(x_ini, y);  print(f"{cb_top}{V}{RESET}", end="", flush=True)
-            gotoxy(x_fin, y);  print(f"{cb_top}{V}{RESET}", end="", flush=True)
+        def pared(y, color=None):
+            clr = color or cb
+            gotoxy(x_ini, y); w(f"{clr}{V}{RESET}")
+            gotoxy(x_fin,  y); w(f"{clr}{V}{RESET}")
 
-        def limpiar_fila(y):
-            gotoxy(x_ini+1, y); print(" "*interior, end="", flush=True)
+        def lf(y):
+            gotoxy(x_ini+1, y); w(" "*inter)
 
-        def centrar_top(y, texto, color=""):
-            pad = max(0, (interior - len(texto)) // 2)
-            limpiar_fila(y); gotoxy(x_ini+1+pad, y)
-            print(f"{color}{texto}{RESET}", end="", flush=True)
+        def fila_ct(y, texto, color_txt, color_borde=None):
+            pared(y, color_borde)
+            lf(y)
+            pad = max(0, (inter - len(texto)) // 2)
+            gotoxy(x_ini+1+pad, y)
+            w(f"{color_txt}{texto}{RESET}")
+
+        def fila_tx(y, texto, color_txt, indent=1):
+            pared(y)
+            lf(y)
+            trunc = truncar(texto, inter - indent - 1)
+            gotoxy(x_ini + indent, y)
+            w(f"{color_txt}{trunc}{RESET}")
+
+        def fila_v(y):
+            pared(y); lf(y)
 
         # ── CABECERA ──────────────────────────────────────────────
-        y = 1
-        borde_h(y, TL, TR, cb_top)
+        y = 2
+        bh(y, TL, TR)
+        y += 1; fila_ct(y, "▶  EJECUTANDO EJERCICIO", BOLD + C_TITULO_RUN)
+        y += 1; bh(y, ML, MR)
+        y += 1; fila_tx(y, f"Archivo : {ruta}", C_OPCION_PRIN)
 
-        y += 1; pared_top(y)
-        centrar_top(y, "▶  EJECUTANDO EJERCICIO", BOLD + C_TITULO_RUN)
-
-        y += 1; borde_h(y, ML, MR, cb_top)
-
-        # Archivo
-        y += 1; pared_top(y); limpiar_fila(y)
-        gotoxy(x_ini+1, y)
-        print(f"{C_OPCION_PRIN}{truncar('  Archivo : ' + ruta, interior)}{RESET}",
-              end="", flush=True)
-
-        # Descripción (1 o 2 líneas)
-        label     = "  Desc.   : "
-        max_body  = interior - len(label)
+        label    = "Desc.   : "
+        max_body = inter - len(label) - 2
         if len(descripcion) <= max_body:
-            y += 1; pared_top(y); limpiar_fila(y)
-            gotoxy(x_ini+1, y)
-            print(f"{C_DESC_EJ}{label}{descripcion}{RESET}", end="", flush=True)
+            y += 1; fila_tx(y, f"{label}{descripcion}", C_DESC_EJ)
         else:
-            y += 1; pared_top(y); limpiar_fila(y)
-            gotoxy(x_ini+1, y)
-            print(f"{C_DESC_EJ}{label}{descripcion[:max_body]}{RESET}", end="", flush=True)
-            indent = " " * len(label)
-            y += 1; pared_top(y); limpiar_fila(y)
-            gotoxy(x_ini+1, y)
-            print(f"{C_DESC_EJ}{indent}{truncar(descripcion[max_body:], interior - len(indent))}{RESET}",
-                  end="", flush=True)
+            y += 1; fila_tx(y, f"{label}{descripcion[:max_body]}", C_DESC_EJ)
+            y += 1; fila_tx(y, " "*len(label) + truncar(descripcion[max_body:], max_body), C_DESC_EJ)
 
-        y += 1; borde_h(y, BL, BR, cb_top)
+        y += 1; bh(y, ML, MR)
+        y += 1; fila_v(y)   # margen antes del output
 
-        # Línea en blanco antes del output del ejercicio
-        gotoxy(1, y + 1)
+        # fila donde empieza el output del ejercicio
+        y_out = y + 1
+
         mostrar_cursor()
-        print()          # margen superior del contenido
 
-        # ── EJECUCIÓN (libre — inputs y outputs sin restricción) ──
+        # ── MONKEY-PATCH (sin recursión) ──────────────────────────
+        _orig_print = builtins.print
+        _orig_input = builtins.input
+
+        # Estado compartido entre pared_print y pared_input
+        estado = {"fila": y_out, "prompt_pendiente": ""}
+
+        def _dibujar_fila(texto: str, color_txt: str = C_OPCION_PRIN):
+            """Dibuja una línea de output dentro del marco usando w()."""
+            yf = estado["fila"]
+            # Pared izquierda
+            gotoxy(x_ini, yf); w(f"{cb}{V}{RESET}")
+            # Contenido
+            trunc = truncar(texto, inter - 2)
+            gotoxy(x_ini + 2, yf); w(f"{color_txt}{trunc}{RESET}")
+            # Limpiar resto de la fila
+            relleno = inter - 2 - len(trunc)
+            if relleno > 0:
+                w(" " * relleno)
+            # Pared derecha
+            gotoxy(x_fin, yf); w(f"{cb}{V}{RESET}")
+            # Bajar fila
+            estado["fila"] += 1
+
+        def pared_print(*args, **kwargs):
+            sep  = kwargs.get("sep", " ")
+            end  = kwargs.get("end", "\n")
+            file = kwargs.get("file", None)
+            # Stderr u otro destino → stderr real, sin marco
+            if file is sys.stderr:
+                sys.stderr.write(sep.join(str(a) for a in args) + (end if end else ""))
+                return
+            if file not in (None, sys.stdout):
+                return
+            texto  = sep.join(str(a) for a in args)
+            partes = texto.split("\n")
+            # print con end="" (prompt inline) → guardar y mostrar en input
+            if end == "" and len(partes) == 1:
+                estado["prompt_pendiente"] += partes[0]
+                return
+            # Primera parte puede llevar prompt pendiente pegado
+            if estado["prompt_pendiente"]:
+                partes[0] = estado["prompt_pendiente"] + partes[0]
+                estado["prompt_pendiente"] = ""
+            for parte in partes:
+                _dibujar_fila(parte)
+
+        def pared_input(prompt=""):
+            prompt_str = estado["prompt_pendiente"] + str(prompt)
+            estado["prompt_pendiente"] = ""
+            yf = estado["fila"]
+            # Dibujar la fila del prompt
+            gotoxy(x_ini, yf); w(f"{cb}{V}{RESET}")
+            trunc = truncar(prompt_str, inter - 4)
+            gotoxy(x_ini + 2, yf); w(f"{C_DESC_EJ}{trunc}{RESET}")
+            col_input = x_ini + 2 + len(trunc)
+            # Limpiar resto
+            relleno = inter - 2 - len(trunc)
+            if relleno > 0: w(" " * relleno)
+            gotoxy(x_fin, yf); w(f"{cb}{V}{RESET}")
+            # Posicionar cursor para que el usuario escriba dentro del marco
+            gotoxy(col_input, yf)
+            val = sys.stdin.readline().rstrip("\n")
+            # Redibujar pared derecha (el texto del usuario la pudo pisar)
+            gotoxy(x_fin, yf); w(f"{cb}{V}{RESET}")
+            estado["fila"] += 1
+            return val
+
+        builtins.print = pared_print
+        builtins.input = pared_input
+
+        # ── EJECUCIÓN ─────────────────────────────────────────────
         try:
-            subprocess.run([sys.executable, ruta])
+            runpy.run_path(os.path.abspath(ruta), run_name="__main__")
+        except SystemExit:
+            pass
         except Exception as e:
-            print(f"\n{C_SALIR}  Error al ejecutar el script: {e}{RESET}")
+            _dibujar_fila(f"⚠  Error: {e}", C_SALIR)
+        finally:
+            builtins.print = _orig_print
+            builtins.input = _orig_input
 
         # ── PIE ───────────────────────────────────────────────────
-        print()          # margen inferior del contenido
-        mostrar_cursor()
-        input(f"  {C_ENTER}Presiona Enter para volver al menú...{RESET} ")
+        yp = estado["fila"]
+        fila_v(yp);       yp += 1
+        bh(yp, ML, MR);   yp += 1
+        fila_ct(yp, "✔  Ejercicio finalizado", BOLD + C_TITULO_RUN)
+        yp += 1; bh(yp, ML, MR); yp += 1
+        ocultar_cursor()
+        fila_ct(yp, "Presiona Enter para volver al menú...", C_ENTER)
+        yp += 1; bh(yp, BL, BR)
+
+        gotoxy(x_ini + 1, yp + 1); mostrar_cursor()
+        sys.stdin.readline()
 
 
 # ─────────────────────────────────────────────
